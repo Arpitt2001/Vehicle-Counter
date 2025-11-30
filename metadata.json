@@ -1,0 +1,8 @@
+{
+  "name": "TrafficFlow AI",
+  "description": "Real-time traffic analysis using Gemini Live API to count 2-wheelers and 4-wheelers passing by the camera.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
