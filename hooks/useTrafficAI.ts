@@ -4,22 +4,23 @@ import { TrafficStats, StreamState, LogEntry } from '../types';
 import { blobToBase64, createPcmBlob, decodeAudioData, base64ToUint8Array } from '../utils/audio-utils';
 
 const MODEL_NAME = 'gemini-2.5-flash-native-audio-preview-09-2025';
-const VIDEO_FRAME_RATE = 1; 
-const JPEG_QUALITY = 0.6;
+// Increased frame rate for better tracking of moving vehicles
+const VIDEO_FRAME_RATE = 2; 
+const JPEG_QUALITY = 0.8;
 
 const updateTrafficCountTool: FunctionDeclaration = {
   name: 'update_traffic_count',
-  description: 'Call this function when vehicles CROSS the detected line. Accumulate counts if multiple pass simultaneously.',
+  description: 'Call this function when vehicles are detected inside the BLUE DETECTION ZONE.',
   parameters: {
     type: Type.OBJECT,
     properties: {
       two_wheelers: {
         type: Type.NUMBER,
-        description: 'Count of new 2-wheelers (motorcycles, scooters) crossing the line.',
+        description: 'Count of 2-wheelers (motorcycles, scooters, bikes) currently in the zone.',
       },
       four_wheelers: {
         type: Type.NUMBER,
-        description: 'Count of new 4-wheelers (cars, trucks, buses) crossing the line.',
+        description: 'Count of 4-wheelers (cars, trucks, buses, vans) currently in the zone.',
       },
     },
     required: ['two_wheelers', 'four_wheelers'],
@@ -44,7 +45,6 @@ export const useTrafficAI = () => {
   // Audio
   const inputAudioContextRef = useRef<AudioContext | null>(null);
   const outputAudioContextRef = useRef<AudioContext | null>(null);
-  const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const nextStartTimeRef = useRef<number>(0);
 
   const addLog = (message: string, type: LogEntry['type'] = 'info') => {
@@ -72,7 +72,7 @@ export const useTrafficAI = () => {
           const parts = [];
           if (newTwo) parts.push(`${newTwo} Bike(s)`);
           if (newFour) parts.push(`${newFour} Car(s)`);
-          addLog(`Vehicle detected: ${parts.join(', ')}`, 'vehicle');
+          addLog(`Detected: ${parts.join(', ')}`, 'vehicle');
         }
 
         // Send confirmation
@@ -132,8 +132,8 @@ export const useTrafficAI = () => {
             noiseSuppression: true
         }, 
         video: { 
-          width: { ideal: 640 }, 
-          height: { ideal: 480 },
+          width: { ideal: 1280 }, 
+          height: { ideal: 720 },
           facingMode: modeToUse 
         } 
       });
@@ -151,20 +151,24 @@ export const useTrafficAI = () => {
           responseModalities: [Modality.AUDIO],
           tools: [{ functionDeclarations: [updateTrafficCountTool] }],
           systemInstruction: `
-            You are a precise Traffic Counting AI.
+            You are a highly accurate Traffic Monitor.
             
-            INPUT:
-            - You will receive a video stream with a visible GREEN LINE drawn across the screen.
-            - You will receive live audio from the street.
-
-            TASK:
-            - Count vehicles (2-Wheelers vs 4-Wheelers) ONLY when they CROSS the GREEN LINE.
-            - Use the LINE as a tripwire. Do not count vehicles in the distance or background.
-            - Use Audio cues (engine noise) to confirm presence and type (e.g. heavy diesel sound vs high-pitched motorbike).
+            VISUAL CONTEXT:
+            - You see a live street feed.
+            - There is a semi-transparent BLUE DETECTION ZONE overlay at the bottom of the video.
             
-            OUTPUT:
-            - Call 'update_traffic_count' immediately when the line is crossed.
-            - Be extremely concise with audio feedback.
+            YOUR TASK:
+            1. Monitor vehicles entering the BLUE DETECTION ZONE.
+            2. When a vehicle is clearly inside the Blue Zone, count it.
+            3. Classify strictly:
+               - "two_wheelers": Motorbikes, scooters, bicycles.
+               - "four_wheelers": Cars, SUVs, trucks, buses, vans.
+            4. Do NOT count vehicles in the distance or background. Only count when they overlap the BLUE ZONE.
+            5. Ignore pedestrians.
+            6. If you see a vehicle, call 'update_traffic_count' immediately.
+            
+            AUDIO CONTEXT:
+            - Use audio to confirm engine types (e.g., loud motorbike exhaust vs heavy truck diesel) to improve classification accuracy if visual is blurry.
           `,
         },
         callbacks: {
@@ -236,7 +240,6 @@ export const useTrafficAI = () => {
             setError(msg);
             setStreamState(StreamState.ERROR);
             
-            // Clean up resources immediately on error
             if (streamRef.current) {
                 streamRef.current.getTracks().forEach(track => track.stop());
                 streamRef.current = null;
@@ -251,7 +254,6 @@ export const useTrafficAI = () => {
       addLog(`Failed to start: ${msg}`, 'error');
       setError(msg);
       setStreamState(StreamState.ERROR);
-      // Do not recursively call stopStream here to avoid state loop, just clean up logic inside startStream if needed
       if (streamRef.current) {
           streamRef.current.getTracks().forEach(track => track.stop());
           streamRef.current = null;
@@ -272,26 +274,39 @@ export const useTrafficAI = () => {
         
         if (!video || !canvas || video.readyState !== 4) return;
 
-        // Draw video
-        canvas.width = video.videoWidth / 2;
-        canvas.height = video.videoHeight / 2;
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        // Use a standard width for consistent token usage, maintaining aspect ratio
+        const targetWidth = 640;
+        const scaleFactor = targetWidth / video.videoWidth;
+        const targetHeight = video.videoHeight * scaleFactor;
 
-        // Draw Virtual Tripwire (Green Line)
-        const lineY = canvas.height * 0.75; // 75% down
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+        
+        // Draw the raw video frame
+        ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+
+        // Define Detection Zone (Bottom 35% of the screen)
+        const zoneY = targetHeight * 0.65;
+        const zoneHeight = targetHeight * 0.35;
+        
+        // Draw Detection Zone Overlay
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.2)'; // Blue tint
+        ctx.fillRect(0, zoneY, targetWidth, zoneHeight);
+        
+        // Draw Zone Borders
         ctx.beginPath();
-        ctx.moveTo(0, lineY);
-        ctx.lineTo(canvas.width, lineY);
-        ctx.strokeStyle = '#00ff00';
-        ctx.lineWidth = 3;
-        ctx.shadowColor = 'rgba(0,0,0,0.5)';
-        ctx.shadowBlur = 4;
+        ctx.moveTo(0, zoneY);
+        ctx.lineTo(targetWidth, zoneY);
+        ctx.strokeStyle = '#38bdf8'; // Brand accent
+        ctx.lineWidth = 2;
+        ctx.setLineDash([10, 5]); // Dashed line for top border
         ctx.stroke();
+        ctx.setLineDash([]); // Reset dash
 
-        // Add "TRIPWIRE" text for Model Context
-        ctx.fillStyle = '#00ff00';
+        // Draw Label
+        ctx.fillStyle = '#38bdf8';
         ctx.font = 'bold 16px Arial';
-        ctx.fillText('COUNT LINE', 10, lineY - 5);
+        ctx.fillText('DETECTION ZONE', 10, zoneY + 25);
         
         canvas.toBlob(async (blob) => {
             if (!blob) return;
@@ -319,7 +334,6 @@ export const useTrafficAI = () => {
         frameIntervalRef.current = null;
     }
     
-    // Close audio contexts
     if (inputAudioContextRef.current?.state !== 'closed') await inputAudioContextRef.current?.close();
     if (outputAudioContextRef.current?.state !== 'closed') await outputAudioContextRef.current?.close();
 
