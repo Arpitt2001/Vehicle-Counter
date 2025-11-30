@@ -85,11 +85,13 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({
                 <span className="text-xs font-bold text-red-400 tracking-widest">LIVE</span>
             </div>
 
-            {/* Visual Tripwire Representation */}
+            {/* Visual Detection Zone Representation */}
             <div className="absolute inset-0 pointer-events-none">
-                <div className="absolute top-[75%] left-0 right-0 h-0.5 bg-green-500 shadow-[0_0_10px_#22c55e]"></div>
-                <div className="absolute top-[calc(75%-20px)] left-2 bg-green-500/20 text-green-400 text-[10px] font-bold px-1.5 py-0.5 rounded border border-green-500/30">
-                    DETECTION LINE
+                {/* Zone Area */}
+                <div className="absolute top-[65%] bottom-0 left-0 right-0 bg-brand-accent/20 border-t-2 border-dashed border-brand-accent/70">
+                   <div className="absolute top-2 left-2 bg-brand-accent/90 text-slate-900 text-[10px] font-bold px-1.5 py-0.5 rounded shadow-sm">
+                     DETECTION ZONE
+                   </div>
                 </div>
             </div>
 
